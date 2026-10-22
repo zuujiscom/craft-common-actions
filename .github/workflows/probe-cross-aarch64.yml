@@ -42,7 +42,7 @@ jobs:
             # Both architectures' rust packages must be the same build: use the quarterly branch
             # for the host and for the aarch64 fetch ("latest" lets aarch64 lag behind amd64).
             mkdir -p /usr/local/etc/pkg/repos
-            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly" }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            printf 'FreeBSD: { url: "https://pkg.FreeBSD.org/${ABI}/quarterly" }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
             pkg update -f -q
             pkg install -y git curl pkgconf cmake python3 rust
       - name: Build the arm64 sysroot and aarch64 std
