@@ -1,0 +1,62 @@
+# Throwaway probe (branch probe/gpu-timing on zuujiscom only): does photocraft-gpu's timing test
+# crash in the FreeBSD VM when run in parallel, and pass single-threaded, on every runner?
+name: Probe GPU timing test
+
+on:
+  push:
+    branches: [probe/gpu-timing]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PHOTOCRAFT_SHA: 38bc5e916c4d0d8536d8d81f2a4d3f2950b4c749
+
+jobs:
+  probe:
+    name: ${{ matrix.runner }} (FreeBSD ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04-arm, arch: aarch64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+          - { runner: ubuntu-26.04-arm, arch: aarch64 }
+          - { runner: ubuntu-latest, arch: x86_64 }
+    steps:
+      - name: Host CPU, KVM and disk
+        run: |
+          kvm=no; [ -e /dev/kvm ] && kvm=yes
+          echo "::notice title=host ${{ matrix.runner }}::$(uname -m), $(nproc) CPUs, $(free -g | awk '/Mem:/{print $2}') GB RAM, kvm=$kvm, free disk: $(df -h --output=avail / | tail -1 | tr -d ' ') on /, $(df -h --output=avail /mnt 2>/dev/null | tail -1 | tr -d ' ') on /mnt"
+          df -h
+      - name: FreeBSD VM, build and run the timing test
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          arch: ${{ matrix.arch }}
+          usesh: true
+          cpu: 4
+          mem: 12288
+          copyback: false
+          envs: "PHOTOCRAFT_SHA"
+          prepare: |
+            pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib dejavu
+            if [ "$(uname -m)" = arm64 ]; then pkg install -y rust; else curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal; fi
+          run: |
+            set -u
+            [ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+            echo "::notice title=vm::$(uname -m), $(sysctl -n hw.ncpu) CPUs, $(rustc --version), free disk $(df -h / | awk 'NR==2{print $4}')"
+            git clone -q https://github.com/storytold/photocraft.git /var/tmp/pc && cd /var/tmp/pc && git checkout -q "$PHOTOCRAFT_SHA" || exit 1
+            t0=$(date +%s)
+            CARGO_PROFILE_DEV_DEBUG=0 CARGO_BUILD_JOBS=4 cargo test -p photocraft-gpu --test timing --locked --no-run || exit 1
+            echo "::notice title=build::photocraft-gpu timing test built in $(( $(date +%s) - t0 ))s"
+            B=$(ls -t /var/tmp/pc/target/debug/deps/timing-* | grep -v '\.d$' | head -1)
+            cd crates/gpu
+            par=""; ser=""
+            for i in 1 2 3; do "$B" > /tmp/par.$i 2>&1; par="$par $?"; done
+            for i in 1 2 3; do "$B" --test-threads=1 > /tmp/ser.$i 2>&1; ser="$ser $?"; done
+            echo "::notice title=timing test::parallel exit codes:$par | --test-threads=1 exit codes:$ser (0=pass, 139=SIGSEGV)"
+            tail -3 /tmp/par.1; tail -3 /tmp/ser.1
