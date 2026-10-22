@@ -1,0 +1,93 @@
+# Throwaway probe (branch probe/cross-aarch64 on zuujiscom only): cross-compile PhotoCraft for
+# FreeBSD aarch64 inside the KVM-accelerated FreeBSD x86_64 VM, with STABLE packaged Rust: the
+# aarch64-unknown-freebsd std comes from FreeBSD's own aarch64 `rust` package (same version as
+# the amd64 one), so no nightly or -Zbuild-std. Links with base clang + lld against an arm64
+# sysroot (base.txz + the GUI packages CI installs).
+name: Probe FreeBSD aarch64 cross-compile
+
+on:
+  push:
+    branches: [probe/cross-aarch64]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross:
+    name: x86_64 VM -> aarch64-unknown-freebsd
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out PhotoCraft main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/photocraft
+          ref: 38bc5e916c4d0d8536d8d81f2a4d3f2950b4c749
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Start the FreeBSD x86_64 VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          usesh: true
+          cpu: 4
+          mem: 12288
+          prepare: |
+            pkg install -y git curl pkgconf cmake python3 rust
+      - name: Build the arm64 sysroot and aarch64 std
+        shell: freebsd {0}
+        run: |
+          set -eu
+          X=/var/tmp/xc; S=$X/sysroot-arm64; mkdir -p $X/db $X/cache $S
+          P="-o ABI=FreeBSD:15:aarch64 -o OSVERSION=1501000 -o PKG_DBDIR=$X/db -o PKG_CACHEDIR=$X/cache -o IGNORE_OSVERSION=yes"
+          pkg $P update -q
+          host=$(pkg query %v rust); arm=$(pkg $P rquery %v rust)
+          echo "::notice title=rust versions::host amd64 package $host, aarch64 package $arm"
+          [ "$host" = "$arm" ] || { echo "rust package versions differ" >&2; exit 1; }
+          pkg $P fetch -y -q rust
+          f=$(ls $X/cache/rust-$arm*.pkg | grep -v '~' | head -1)
+          tar -xf "$f" -C $X usr/local/lib/rustlib/aarch64-unknown-freebsd
+          cp -R $X/usr/local/lib/rustlib/aarch64-unknown-freebsd /usr/local/lib/rustlib/
+          B=https://download.freebsd.org/releases/arm64/aarch64/15.1-RELEASE
+          fetch -q -o $X/MANIFEST $B/MANIFEST; fetch -q -o $X/base.txz $B/base.txz
+          [ "$(awk '$1=="base.txz"{print $2}' $X/MANIFEST)" = "$(sha256 -q $X/base.txz)" ] || { echo "base.txz checksum mismatch" >&2; exit 1; }
+          tar -xf $X/base.txz -C $S ./lib ./usr/lib ./usr/include ./usr/libdata
+          pkg $P fetch -y -q -d libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+          for p in $X/cache/*.pkg; do [ -L "$p" ] && continue; case "$p" in */rust-*) continue;; esac; tar -xf "$p" -C $S --exclude '+*'; done
+          for t in cc c++; do
+            printf '#!/bin/sh\nexec %s --target=aarch64-unknown-freebsd15.1 --sysroot=%s -fuse-ld=lld -I%s/usr/local/include -L%s/usr/local/lib -Wl,-rpath-link,%s/usr/local/lib "$@"\n' $t $S $S $S $S > $X/$t-arm64
+            chmod +x $X/$t-arm64
+          done
+          echo "::notice title=sysroot ready::after $(( $(date +%s) - T0 ))s"
+      - name: Cross-compile PhotoCraft release binaries
+        shell: freebsd {0}
+        run: |
+          set -eu
+          X=/var/tmp/xc; S=$X/sysroot-arm64
+          export CARGO_TARGET_DIR=/var/tmp/xc-target CARGO_BUILD_JOBS=4 CRAFT_FONTS_DIR="$PWD/craft-fonts"
+          export CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_LINKER=$X/cc-arm64
+          export CC_aarch64_unknown_freebsd=$X/cc-arm64 CXX_aarch64_unknown_freebsd=$X/c++-arm64 AR_aarch64_unknown_freebsd=/usr/bin/ar
+          export PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_SYSROOT_DIR=$S PKG_CONFIG_LIBDIR=$S/usr/local/libdata/pkgconfig:$S/usr/libdata/pkgconfig
+          t0=$(date +%s)
+          cargo build --release --locked -p photocraft -p photocraft-cli --features heif --target aarch64-unknown-freebsd
+          echo "::notice title=cross build::release photocraft + photocraft-cli for aarch64 in $(( $(date +%s) - t0 ))s"
+          mkdir -p dist-aarch64
+          for b in photocraft photocraft-cli; do
+            cp $CARGO_TARGET_DIR/aarch64-unknown-freebsd/release/$b dist-aarch64/
+            echo "::notice title=$b::$(file -b dist-aarch64/$b | cut -c1-120)"
+          done
+          echo "T_BUILT=$(date +%s)" > dist-aarch64/timing
+      - name: Upload the aarch64 binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: photocraft-freebsd-aarch64-cross
+          path: dist-aarch64/
+          retention-days: 3
+      - name: Done
+        run: echo "::notice title=total::job body took $(( $(date +%s) - T0 ))s"
