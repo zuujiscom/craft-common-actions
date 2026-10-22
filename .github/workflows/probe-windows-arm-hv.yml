@@ -39,3 +39,17 @@ jobs:
           "::notice title=systeminfo::$sys"
           $wsl = (wsl --status 2>&1 | Out-String).Trim() -replace "`0", '' -replace "\r?\n", ' | '
           "::notice title=wsl::$wsl"
+
+  macos:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15, macos-26]
+    steps:
+      - name: Hypervisor.framework facts
+        run: |
+          echo "::notice title=host::$(sw_vers -productVersion), $(sysctl -n machdep.cpu.brand_string), $(sysctl -n hw.ncpu) CPUs, $(( $(sysctl -n hw.memsize) / 1073741824 )) GB, free disk $(df -h / | awk 'NR==2{print $4}')"
+          echo "::notice title=hypervisor::kern.hv_support=$(sysctl -n kern.hv_support 2>/dev/null || echo n/a), kern.hv_vmm_present=$(sysctl -n kern.hv_vmm_present 2>/dev/null || echo n/a)"
