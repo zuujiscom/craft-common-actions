@@ -1,0 +1,115 @@
+# Throwaway probe (branch probe/photocraft-fixed on zuujiscom only): PhotoCraft's FreeBSD CI, as
+# craft-common-actions freebsd.yml runs it, with one change: photocraft-gpu's tests run
+# single-threaded (its timing test SIGSEGVs in the VM's software Vulkan when run in parallel).
+# The shared workflow fixes runs-on to ubuntu-latest, so its steps are copied here with a runner
+# matrix. No Cargo cache (cold build every time).
+name: Probe PhotoCraft FreeBSD (fixed)
+
+on:
+  push:
+    branches: [probe/photocraft-fixed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd:
+    name: ${{ matrix.runner }} (FreeBSD ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, arch: x86_64 }
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-26.04, arch: x86_64 }
+          - { runner: ubuntu-22.04-arm, arch: aarch64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+          - { runner: ubuntu-26.04-arm, arch: aarch64 }
+    env:
+      CARGO_HOME: /var/tmp/craft-cargo
+      CARGO_TARGET_DIR: /var/tmp/craft-target
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - name: Check out PhotoCraft main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/photocraft
+          ref: 38bc5e916c4d0d8536d8d81f2a4d3f2950b4c749
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - name: Host
+        run: |
+          kvm=no; [ -e /dev/kvm ] && kvm=yes
+          echo "::notice title=host::$(uname -m), $(nproc) CPUs, $(free -g | awk '/Mem:/{print $2}') GB, kvm=$kvm, free / $(df -h --output=avail / | tail -1 | tr -d ' ')"
+          echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Start the FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          arch: ${{ matrix.arch }}
+          usesh: true
+          cpu: 4
+          mem: 12288
+          copyback: false
+          envs: "CARGO_HOME CARGO_TARGET_DIR CARGO_INCREMENTAL CARGO_BUILD_JOBS"
+          prepare: |
+            unset CARGO_HOME CARGO_TARGET_DIR
+            pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib dejavu
+            if [ "${{ matrix.arch }}" = aarch64 ]; then
+              pkg install -y rust
+            else
+              curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+            fi
+      - name: VM up
+        run: echo "::notice title=vm up::after $(( $(date +%s) - T0 ))s"
+      - name: Build
+        shell: freebsd {0}
+        run: |
+          set -eu
+          [ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+          git config --global --add safe.directory "*"
+          rustc --version
+          export CRAFT_FONTS_DIR="$PWD/craft-fonts"
+          CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --all-targets --locked --features heif
+      - name: Built
+        run: echo "::notice title=build done::after $(( $(date +%s) - T0 ))s"
+      - name: Test (photocraft-gpu single-threaded)
+        shell: freebsd {0}
+        run: |
+          set -eu
+          [ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+          export CRAFT_FONTS_DIR="$PWD/craft-fonts" CARGO_PROFILE_DEV_DEBUG=0
+          cargo test --workspace --locked --features heif --exclude photocraft-ui-egui --exclude photocraft-gpu
+          # The VM's software Vulkan driver crashes (SIGSEGV) when several tests set up a GPU
+          # device at once, so the GPU tests run one at a time here.
+          cargo test -p photocraft-gpu --locked -- --test-threads=1
+          cargo test -p photocraft-ui-egui --locked --lib
+          cargo test -p photocraft-ui-egui --locked --doc
+          cargo test -p photocraft-ui-egui --locked --test '*' -- --test-threads=1
+      - name: Tested
+        run: echo "::notice title=tests passed::after $(( $(date +%s) - T0 ))s"
+      - name: Build and validate the FreeBSD package
+        shell: freebsd {0}
+        run: |
+          set -eu
+          [ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+          rm -rf /var/tmp/craft-target/debug
+          export CRAFT_FONTS_DIR="$PWD/craft-fonts"
+          CARGO_BUILD_JOBS=4 bash packaging/freebsd/package.sh
+          for archive in dist/release/*-freebsd-${{ matrix.arch }}.tar.gz; do
+            [ -f "$archive" ] || { echo "error: no FreeBSD ${{ matrix.arch }} package was produced" >&2; exit 1; }
+            tar -tzf "$archive" | grep -E '/bin/photocraft$|/bin/photocraft-cli$'
+          done
+      - name: Packaged
+        run: echo "::notice title=package ok::after $(( $(date +%s) - T0 ))s"
+      - name: Failure point
+        if: failure()
+        run: echo "::error title=failed::after $(( $(date +%s) - T0 ))s; see the failed step's log"
