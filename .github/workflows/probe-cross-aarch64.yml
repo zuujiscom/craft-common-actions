@@ -49,7 +49,7 @@ jobs:
         shell: freebsd {0}
         run: |
           set -eu
-          X=/var/tmp/xc; S=$X/sysroot-arm64; mkdir -p $X/db $X/cache $S
+          t0=$(date +%s); X=/var/tmp/xc; S=$X/sysroot-arm64; mkdir -p $X/db $X/cache $S
           P="-o ABI=FreeBSD:15:aarch64 -o OSVERSION=1501000 -o PKG_DBDIR=$X/db -o PKG_CACHEDIR=$X/cache -o IGNORE_OSVERSION=yes"
           pkg $P update -q
           host=$(pkg query %v rust); arm=$(pkg $P rquery %v rust)
@@ -69,7 +69,7 @@ jobs:
             printf '#!/bin/sh\nexec %s --target=aarch64-unknown-freebsd15.1 --sysroot=%s -fuse-ld=lld -I%s/usr/local/include -L%s/usr/local/lib -Wl,-rpath-link,%s/usr/local/lib "$@"\n' $t $S $S $S $S > $X/$t-arm64
             chmod +x $X/$t-arm64
           done
-          echo "::notice title=sysroot ready::after $(( $(date +%s) - T0 ))s"
+          echo "::notice title=sysroot ready::step took $(( $(date +%s) - t0 ))s"
       - name: Cross-compile PhotoCraft release binaries
         shell: freebsd {0}
         run: |
