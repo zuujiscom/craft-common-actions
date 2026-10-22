@@ -1,0 +1,41 @@
+# Throwaway probe (branch probe/windows-arm-hv on zuujiscom only): can GitHub's Windows Arm
+# runners run a hardware-accelerated VM (Hyper-V / Windows Hypervisor Platform for QEMU WHPX)?
+name: Probe Windows Arm hypervisor
+
+on:
+  push:
+    branches: [probe/windows-arm-hv]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-11-arm, windows-11-vs2026-arm]
+    steps:
+      - name: Hypervisor facts
+        shell: pwsh
+        run: |
+          $cs = Get-CimInstance Win32_ComputerSystem
+          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+          $feat = @{}
+          foreach ($f in 'Microsoft-Hyper-V', 'Microsoft-Hyper-V-Hypervisor', 'HypervisorPlatform', 'VirtualMachinePlatform') {
+            try { $feat[$f] = (Get-WindowsOptionalFeature -Online -FeatureName $f -ErrorAction Stop).State } catch { $feat[$f] = "n/a" }
+          }
+          $vmms = (Get-Service vmms -ErrorAction SilentlyContinue).Status
+          $hvsvc = (Get-Service vmcompute -ErrorAction SilentlyContinue).Status
+          $vbs = try { (Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction Stop).VirtualizationBasedSecurityStatus } catch { "n/a" }
+          $sys = (systeminfo | Select-String -Pattern 'Hyper-V|hypervisor' | ForEach-Object { $_.Line.Trim() }) -join ' / '
+          "::notice title=cpu::$($env:PROCESSOR_ARCHITECTURE), $($cpu.Name), $($cpu.NumberOfLogicalProcessors) logical, VirtualizationFirmwareEnabled=$($cpu.VirtualizationFirmwareEnabled), SLAT=$($cpu.SecondLevelAddressTranslationExtensions), VMMonitorModeExtensions=$($cpu.VMMonitorModeExtensions)"
+          "::notice title=hypervisor::HypervisorPresent=$($cs.HypervisorPresent), Model=$($cs.Model), VBS=$vbs"
+          "::notice title=features::$(($feat.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '), vmms=$vmms, vmcompute=$hvsvc"
+          "::notice title=systeminfo::$sys"
+          $wsl = (wsl --status 2>&1 | Out-String).Trim() -replace "`0", '' -replace "\r?\n", ' | '
+          "::notice title=wsl::$wsl"
