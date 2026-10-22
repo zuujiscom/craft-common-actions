@@ -1,0 +1,49 @@
+# Throwaway probe (branch probe/arm64-kvm on zuujiscom only): can the FreeBSD aarch64 VM run
+# natively on GitHub's ubuntu-24.04-arm runners instead of emulated on ubuntu-latest?
+name: Probe arm64 KVM
+
+on:
+  push:
+    branches: [probe/arm64-kvm]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: FreeBSD aarch64 on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-latest]
+    steps:
+      - name: Host CPU and KVM
+        run: |
+          uname -m; nproc; free -g | head -2
+          ls -l /dev/kvm || echo "NO /dev/kvm"
+          grep -o -m1 -w -E 'vmx|svm' /proc/cpuinfo || true
+          dmesg 2>/dev/null | grep -i kvm | head -5 || true
+      - name: FreeBSD 15.1 aarch64 VM, timed ripgrep release build
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          arch: aarch64
+          usesh: true
+          cpu: 4
+          mem: 12288
+          copyback: false
+          prepare: |
+            pkg install -y git rust
+          run: |
+            set -e
+            uname -a
+            sysctl -n hw.ncpu
+            rustc --version
+            git clone -q --depth 1 --branch 14.1.1 https://github.com/BurntSushi/ripgrep /var/tmp/rg
+            cd /var/tmp/rg
+            t0=$(date +%s)
+            cargo build --release --locked
+            echo "RIPGREP_BUILD_SECONDS=$(( $(date +%s) - t0 ))"
