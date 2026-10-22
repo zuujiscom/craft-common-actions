@@ -39,15 +39,34 @@ jobs:
           "::notice title=systeminfo::$sys"
           $wsl = (wsl --status 2>&1 | Out-String).Trim() -replace "`0", '' -replace "\r?\n", ' | '
           "::notice title=wsl::$wsl"
+          $global:LASTEXITCODE = 0
+      - name: Start a Hyper-V VM (nested virtualisation test)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          try {
+            $vhd = "$env:RUNNER_TEMP\probe.vhdx"
+            New-VHD -Path $vhd -SizeBytes 1GB -Dynamic -ErrorAction Stop | Out-Null
+            New-VM -Name probe -Generation 2 -MemoryStartupBytes 1GB -VHDPath $vhd -ErrorAction Stop | Out-Null
+            Set-VMFirmware -VMName probe -EnableSecureBoot Off -ErrorAction SilentlyContinue
+            Start-VM -Name probe -ErrorAction Stop
+            Start-Sleep -Seconds 10
+            $vm = Get-VM -Name probe
+            "::notice title=hyper-v VM::state=$($vm.State), uptime=$($vm.Uptime), cpuUsage=$($vm.CPUUsage)"
+            Stop-VM -Name probe -TurnOff -Force
+          } catch {
+            "::notice title=hyper-v VM::FAILED: $($_.Exception.Message -replace '\r?\n', ' ')"
+          }
 
   macos:
+    if: false  # answered: no Hypervisor.framework on macOS runners
     name: ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-14, macos-15, macos-26]
+        runner: [macos-26]
     steps:
       - name: Hypervisor.framework facts
         run: |
