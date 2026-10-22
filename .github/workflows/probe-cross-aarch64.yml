@@ -57,7 +57,7 @@ jobs:
           [ "$host" = "$arm" ] || { echo "rust package versions differ" >&2; exit 1; }
           pkg $P fetch -y -q rust
           f=$(ls $X/cache/rust-$arm*.pkg | grep -v '~' | head -1)
-          tar -xf "$f" -C $X usr/local/lib/rustlib/aarch64-unknown-freebsd
+          tar -xf "$f" -C $X --include "*usr/local/lib/rustlib/aarch64-unknown-freebsd/*"
           cp -R $X/usr/local/lib/rustlib/aarch64-unknown-freebsd /usr/local/lib/rustlib/
           B=https://download.freebsd.org/releases/arm64/aarch64/15.1-RELEASE
           fetch -q -o $X/MANIFEST $B/MANIFEST; fetch -q -o $X/base.txz $B/base.txz
